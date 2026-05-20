@@ -28,9 +28,14 @@ add_executable(mldr ${mldr_sources})
 target_compile_options(mldr PRIVATE -pthread)
 target_link_options(mldr PRIVATE -pthread)
 
+find_library(ANDROID_POSIX_SEMAPHORE_LIB android-posix-semaphore)
 target_link_libraries(mldr PRIVATE -lrt -ldl mldr_dserver_rpc -lm)
+if (ANDROID_POSIX_SEMAPHORE_LIB)
+	target_link_libraries(mldr PRIVATE ${ANDROID_POSIX_SEMAPHORE_LIB})
+endif()
 
 install(TARGETS mldr DESTINATION libexec/darling/usr/libexec/darling)
+install(PROGRAMS $<TARGET_FILE:mldr> DESTINATION libexec/darling/bin)
 
 configure_file(darling.conf.in darling.conf @ONLY)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/darling.conf" DESTINATION lib/binfmt.d)

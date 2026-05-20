@@ -5,13 +5,23 @@
 #include <tgmath.h>
 #include <string.h>
 #include <stdlib.h>
+#if defined(__i386__) || defined(__x86_64__)
 #include <cpuid.h>
+#endif
 #include <unistd.h>
 #include <sys/sysinfo.h>
+#if defined(__aarch64__)
+#include <sys/auxv.h>
+#include <asm/hwcap.h>
+#endif
 
 // Include commpage definitions
 #define PRIVATE
+#if defined(__aarch64__)
+#include <arm/cpu_capabilities.h>
+#else
 #include <i386/cpu_capabilities.h>
+#endif
 
 static const char* SIGNATURE32 = "commpage 32-bit";
 static const char* SIGNATURE64 = "commpage 64-bit";
@@ -34,7 +44,7 @@ void commpage_setup(bool _64bit)
 	struct sysinfo si;
 
 	commpage = (uint8_t*) mmap((void*)(_64bit ? _COMM_PAGE64_BASE_ADDRESS : _COMM_PAGE32_BASE_ADDRESS),
-			_64bit ? _COMM_PAGE64_AREA_LENGTH : _COMM_PAGE32_AREA_LENGTH, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+			_64bit ? _COMM_PAGE64_AREA_LENGTH : _COMM_PAGE32_AREA_LENGTH, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED, -1, 0);
 	if (commpage == MAP_FAILED)
 	{
 		fprintf(stderr, "Cannot mmap commpage: %s\n", strerror(errno));
@@ -86,6 +96,40 @@ uint64_t get_cpu_caps(void)
 {
 	uint64_t caps = 0;
 
+#if defined(__aarch64__)
+	unsigned long hwcap = getauxval(AT_HWCAP);
+
+	// NEON/Advanced SIMD is always present on ARM64
+	caps |= kHasNeon;
+	caps |= kHasVfp;
+	caps |= kHasFMA;
+
+	if (hwcap & HWCAP_FP)
+		caps |= kHasVfp;
+	if (hwcap & HWCAP_FPHP)
+		caps |= kHasNeonFP16;
+	if (hwcap & HWCAP_ASIMDHP)
+		caps |= kHasNeonHPFP;
+	if (hwcap & HWCAP_ATOMICS)
+		caps |= kHasARMv81Atomics;
+	if (hwcap & HWCAP_CRC32)
+		caps |= kHasARMv8Crc32;
+	if (hwcap & HWCAP_AES)
+		caps |= kHasARMv8Crypto;
+	if (hwcap & HWCAP_SHA2)
+		caps |= kHasARMv8Crypto;
+#ifdef HWCAP_SHA512
+	if (hwcap & HWCAP_SHA512)
+		caps |= kHasARMv82SHA512;
+#endif
+#ifdef HWCAP_SHA3
+	if (hwcap & HWCAP_SHA3)
+		caps |= kHasARMv82SHA3;
+#endif
+	if (hwcap & HWCAP_EVTSTRM)
+		caps |= kHasEvent;
+
+#else /* x86 */
 	{
 		union cpu_flags1 eax;
 		union cpu_flags2 ecx;
@@ -150,6 +194,7 @@ uint64_t get_cpu_caps(void)
 		if (ebx.sgx)
 			caps |= kHasSGX;
 	}
+#endif /* __aarch64__ */
 
 	return caps;
 }
