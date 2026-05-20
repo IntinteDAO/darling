@@ -13,6 +13,10 @@
 #include <stdexcept>
 #include <fstream>
 #include <link.h>
+#ifndef ELF64_ST_VISIBILITY
+#define ELF64_ST_VISIBILITY(o) ((o) & 0x03)
+#endif
+
 
 #ifndef PATH_MAX
 #	define PATH_MAX	4096
@@ -64,6 +68,23 @@ int main(int argc, const char** argv)
 				throw std::runtime_error(ss.str());
 			}
 
+#if defined(__ANDROID__)
+			const char* pfx = getenv("TERMUX_PREFIX");
+			if (!pfx || !pfx[0]) pfx = getenv("PREFIX");
+#ifdef TERMUX_PREFIX
+			if (!pfx || !pfx[0]) pfx = TERMUX_PREFIX;
+#endif
+			std::string paths[3];
+			int npaths = 0;
+			if (pfx && pfx[0]) {
+				paths[npaths++] = std::string(pfx) + "/lib/" + elfLibrary;
+			}
+			paths[npaths++] = std::string("/system/lib64/") + elfLibrary;
+			paths[npaths++] = std::string("/system/lib/") + elfLibrary;
+			for (int i = 0; i < npaths; ++i) {
+				if (access(paths[i].c_str(), R_OK) == 0) { elfLibrary = paths[i]; break; }
+			}
+#else
 			if (dlinfo(handle, RTLD_DI_LINKMAP, &lm) == 0)
 			{
 				elfLibrary = lm->l_name;
@@ -76,6 +97,7 @@ int main(int argc, const char** argv)
 			}
 
 			dlclose(handle);
+#endif
 		}
 
 		parse_elf(elfLibrary.c_str(), soname, functions, vars);
@@ -140,10 +162,10 @@ void parse_elf(const char* elf, std::string& soname, std::set<std::string>& symb
 		throw std::runtime_error(ss.str());
 	}
 
-	if (ehdr->e_machine != EM_X86_64)
+	if (ehdr->e_machine != EM_X86_64 && ehdr->e_machine != EM_AARCH64)
 	{
 		std::stringstream ss;
-		ss << elf << " is not an ELF for x86-64";
+		ss << elf << " is not a supported 64-bit ELF (expected x86-64 or aarch64)";
 		throw std::runtime_error(ss.str());
 	}
 
