@@ -1,3 +1,7 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <dispatch/dispatch.h>
 #include <os/assumes.h>
 #include "job_reply.h"
@@ -117,10 +121,37 @@ _logmsg_remove(struct logmsg_s *lm)
 	free(lm);
 }
 
+
+/* Termux/non-root debug: append a line to /launchd_dbg.log (vchroot root;
+ * readable on the host as <prefix>/launchd_dbg.log). */
+static void
+_launchd_dbg_write(const char *tag, const char *msg)
+{
+	static int log_fd = -2;
+	if (log_fd == -2) {
+		const char *log_dir = getenv("DARLING_LOG_DIR");
+		char logpath[PATH_MAX];
+		if (log_dir && log_dir[0])
+		snprintf(logpath, sizeof(logpath), "%s/launchd_dbg.log", log_dir);
+		else
+		snprintf(logpath, sizeof(logpath), "/launchd_dbg.log");
+		log_fd = open(logpath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	}
+	if (log_fd >= 0) {
+		dprintf(log_fd, "[%s] %s\n", tag, msg);
+	}
+}
 bool
 _launchd_os_redirect(const char *message)
 {
 	launchd_syslog(LOG_ERR, "%s", message);
+	/* Termux/non-root debug: mirror assertion failures to a known file so they
+	 * are visible even when the syslog socket / stderr are unavailable. */
+	_launchd_dbg_write("os_assert", message);
+	if (getenv("DARLING_LAUNCHD_STDERR")) {
+		fprintf(stderr, "[launchd os_assert] %s\n", message);
+		fflush(stderr);
+	}
 	return true;
 }
 
@@ -219,6 +250,13 @@ launchd_vsyslog(struct launchd_syslog_attr *attr, const char *fmt, va_list args)
 	}
 
 	vsnprintf(message, sizeof(message), fmt, args);
+	if (getenv("DARLING_LAUNCHD_STDERR")) {
+		int _se = errno;
+		_launchd_dbg_write("syslog", message);
+		fprintf(stderr, "[launchd pri=%d %s] %s\n", (int)attr->priority, attr->from_name, message);
+		fflush(stderr);
+		errno = _se;
+	}
 	if (echo2console && launchd_console) {
 		fprintf(launchd_console, "%-32s %-8u %-64s %-8u  %s\n", attr->from_name, attr->from_pid, attr->about_name, attr->about_pid, message);
 	}
@@ -302,12 +340,20 @@ _launchd_log_uncork_pending_drain(void)
 	mig_deallocate(outval, outvalCnt);
 }
 
+#ifdef DARLING_DEBUG
+extern void darling_kprintf(const char* format, ...);
+#define DLOG(...) darling_kprintf(__VA_ARGS__)
+#else
+#define DLOG(...) ((void)0)
+#endif
+
 void
 launchd_log_push(void)
 {
 	vm_offset_t outval = 0;
 	mach_msg_type_number_t outvalCnt = 0;
 
+	DLOG("launchd_log_push: pid1_magic=%d logq_cnt=%d\n", pid1_magic, _launchd_logq_cnt);
 	if (!pid1_magic) {
 		if (_launchd_perf_log) {
 			(void)fflush(_launchd_perf_log);
@@ -320,7 +366,9 @@ launchd_log_push(void)
 		}
 
 		if (_launchd_logq_cnt && _launchd_log_pack(&outval, &outvalCnt) == 0) {
+			DLOG("launchd_log_push: forwarding %d bytes to bport\n", (int)outvalCnt);
 			(void)_vprocmgr_log_forward(inherited_bootstrap_port, (void *)outval, outvalCnt);
+			DLOG("launchd_log_push: forward done\n");
 			mig_deallocate(outval, outvalCnt);
 		}
 	} else {

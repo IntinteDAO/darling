@@ -17,6 +17,13 @@
  */
 
 #include "config.h"
+
+#ifdef DARLING_DEBUG
+extern void darling_kprintf(const char* format, ...);
+#define DLOG(...) darling_kprintf(__VA_ARGS__)
+#else
+#define DLOG(...) ((void)0)
+#endif
 #include "core.h"
 #include "internal.h"
 #include "helper.h"
@@ -4425,6 +4432,7 @@ job_start(job_t j)
 
 	(void)job_assumes_zero_p(j, socketpair(AF_UNIX, SOCK_STREAM, 0, execspair));
 
+	DLOG("job_start: label=%s\n", j->label);
 	switch (c = runtime_fork(j->weird_bootstrap ? j->j_port : j->mgr->jm_port)) {
 	case -1:
 		job_log_error(j, LOG_ERR, "fork() failed, will try again in one second");
@@ -4748,6 +4756,7 @@ job_start_child(job_t j)
 		file2exec = j->prog ? j->prog : argv[0];
 	}
 
+	DLOG("job_start_child: executing %s\n", file2exec);
 	errno = psf(NULL, file2exec, NULL, &spattr, (char *const *)argv, environ);
 
 #if HAVE_SANDBOX && !TARGET_OS_EMBEDDED
@@ -6450,6 +6459,8 @@ job_setup_exception_port(job_t j, task_t target_task)
 	f = x86_THREAD_STATE;
 #elif defined(__arm__)
 	f = ARM_THREAD_STATE;
+#elif defined(__arm64__) || defined(__aarch64__)
+	f = ARM_THREAD_STATE64;
 #else
 #error "unknown architecture"
 #endif
@@ -7045,6 +7056,8 @@ jobmgr_init_session(jobmgr_t jm, const char *session_type, bool sflag)
 	char thelabel[1000];
 	job_t bootstrapper;
 
+	DLOG("jobmgr_init_session: session=%s\n", session_type);
+
 	snprintf(thelabel, sizeof(thelabel), "com.apple.launchctl.%s", session_type);
 	bootstrapper = job_new(jm, thelabel, NULL, bootstrap_tool);
 
@@ -7063,10 +7076,10 @@ jobmgr_init_session(jobmgr_t jm, const char *session_type, bool sflag)
 #endif
 		bootstrapper->is_bootstrapper = true;
 		if (jobmgr_assumes(jm, pid1_magic)) {
-			// Have our system bootstrapper print out to the console.
-			bootstrapper->stdoutpath = strdup(_PATH_CONSOLE);
-			bootstrapper->stderrpath = strdup(_PATH_CONSOLE);
-
+			if (!getenv("DARLING_NONROOT") && access(_PATH_CONSOLE, W_OK) == 0) {
+				bootstrapper->stdoutpath = strdup(_PATH_CONSOLE);
+				bootstrapper->stderrpath = strdup(_PATH_CONSOLE);
+			}
 			if (launchd_console) {
 				(void)jobmgr_assumes_zero_p(jm, kevent_mod((uintptr_t)fileno(launchd_console), EVFILT_VNODE, EV_ADD | EV_ONESHOT, NOTE_REVOKE, 0, jm));
 			}
