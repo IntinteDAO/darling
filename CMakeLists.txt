@@ -207,44 +207,53 @@ add_subdirectory(src)
 install(DIRECTORY DESTINATION libexec/darling/private)
 install(DIRECTORY DESTINATION libexec/darling/private/etc)
 install(DIRECTORY DESTINATION libexec/darling/private/var)
-install(DIRECTORY DESTINATION libexec/darling/private/tmp)
 InstallSymlink(private/etc ${CMAKE_INSTALL_PREFIX}/libexec/darling/etc)
 InstallSymlink(private/var ${CMAKE_INSTALL_PREFIX}/libexec/darling/var)
 
 install(FILES etc/resolv.conf
 	DESTINATION libexec/darling/private/etc)
-InstallSymlink(/Volumes/SystemRoot/etc/machine-id ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/machine-id)
-InstallSymlink(/Volumes/SystemRoot/etc/nsswitch.conf ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/nsswitch.conf)
+InstallSymlink(../Volumes/SystemRoot/etc/machine-id ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/machine-id)
+InstallSymlink(../Volumes/SystemRoot/etc/nsswitch.conf ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/nsswitch.conf)
 
 install(DIRECTORY DESTINATION libexec/darling/Volumes)
 install(DIRECTORY DESTINATION libexec/darling/Volumes/SystemRoot)
-InstallSymlink(/ ${CMAKE_INSTALL_PREFIX}/libexec/darling/Volumes/DarlingEmulatedDrive)
+InstallSymlink(.. ${CMAKE_INSTALL_PREFIX}/libexec/darling/Volumes/DarlingEmulatedDrive)
 
 install(DIRECTORY DESTINATION libexec/darling/proc)
 
 install(DIRECTORY DESTINATION libexec/darling/var/root)
 install(DIRECTORY DESTINATION libexec/darling/var/run)
-InstallSymlink(/dev/log ${CMAKE_INSTALL_PREFIX}/libexec/darling/var/run/syslog)
+InstallSymlink(../../dev/log ${CMAKE_INSTALL_PREFIX}/libexec/darling/var/run/syslog)
 
 install(DIRECTORY DESTINATION libexec/darling/usr)
 install(DIRECTORY DESTINATION libexec/darling/usr/local)
 install(DIRECTORY DESTINATION libexec/darling/usr/local/share)
 
-InstallSymlink(/Volumes/SystemRoot/dev ${CMAKE_INSTALL_PREFIX}/libexec/darling/dev)
+InstallSymlink(Volumes/SystemRoot/dev ${CMAKE_INSTALL_PREFIX}/libexec/darling/dev)
 InstallSymlink(private/tmp ${CMAKE_INSTALL_PREFIX}/libexec/darling/tmp)
+if (DEFINED ENV{PREFIX})
+	InstallSymlink(../Volumes/SystemRoot$ENV{PREFIX}/tmp ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/tmp)
+elseif (DEFINED TERMUX_PREFIX)
+	InstallSymlink(../Volumes/SystemRoot/tmp /libexec/darling/private/tmp)
+elseif (DEFINED ENV{TERMUX_PREFIX})
+	InstallSymlink(../Volumes/SystemRoot{TERMUX_PREFIX}/tmp /libexec/darling/private/tmp)
+else()
+	InstallSymlink(../Volumes/SystemRoot/tmp ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/tmp)
+endif()
 
-InstallSymlink(/proc/self/mounts ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/mtab)
+InstallSymlink(../../proc/self/mounts ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/mtab)
 #InstallSymlink(/Volumes/SystemRoot/etc/passwd ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/passwd)
 #InstallSymlink(/Volumes/SystemRoot/etc/group ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/group)
-InstallSymlink(/Volumes/SystemRoot/etc/localtime ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/localtime)
+InstallSymlink(../Volumes/SystemRoot/etc/localtime ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/localtime)
 
-InstallSymlink(/Volumes/SystemRoot/usr/share/zoneinfo ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/zoneinfo)
+InstallSymlink(../../Volumes/SystemRoot/usr/share/zoneinfo ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/zoneinfo)
 
 install(DIRECTORY DESTINATION libexec/darling/Library/Preferences)
 
-if(NOT DEBIAN_PACKAGING)
-	install(CODE "execute_process(COMMAND bash ${DARLING_TOP_DIRECTORY}/tools/shutdown-user.sh)")
-endif(NOT DEBIAN_PACKAGING)
+# TODO: re-enable when shutdown-user.sh is ported and supported on ARM64 / non-root
+# if(NOT DEBIAN_PACKAGING)
+# 	install(CODE "execute_process(COMMAND bash ${DARLING_TOP_DIRECTORY}/tools/shutdown-user.sh)")
+# endif(NOT DEBIAN_PACKAGING)
 
 add_custom_target(uninstall
 	COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/uninstall

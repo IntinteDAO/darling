@@ -71,7 +71,7 @@ include_directories("${CMAKE_CURRENT_SOURCE_DIR}/include")
 include(compiler_include)
 GetCompilerInclude(COMPILER_INC_PATH)
 message(STATUS "Compiler include path detected as ${COMPILER_INC_PATH}")
-include_directories(SYSTEM ${COMPILER_INC_PATH})
+
 
 find_package(BISON)
 find_package(FLEX)
@@ -95,6 +95,7 @@ add_subdirectory(libsimple "${CMAKE_CURRENT_BINARY_DIR}/libsimple-linux")
 add_subdirectory(external/darlingserver)
 add_subdirectory(startup)
 
+include_directories(SYSTEM ${COMPILER_INC_PATH})
 include_directories(${CMAKE_SOURCE_DIR}/basic-headers)
 
 add_subdirectory(external/bootstrap_cmds)
@@ -240,7 +241,7 @@ endif()
 if (COMPONENT_cli)
 	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli")
 
-	add_subdirectory(external/darling-dmg)
+	# add_subdirectory(external/darling-dmg)
 	add_subdirectory(external/libutil)
 	add_subdirectory(xtrace)
 	add_subdirectory(external/libxslt)
