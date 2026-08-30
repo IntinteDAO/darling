@@ -36,7 +36,11 @@
 #define LINUX_SIGPWR 30
 #define LINUX_SIGSYS 31
 #define LINUX_SIGUNUSED 31
-#define LINUX_SIGRTMIN 32
+/* Android Bionic libc reserves signals 32 through 42 for internal purposes
+ * (pthread cancellation, timer callbacks, debuggerd). Start guest RT signals at 43. */
+#ifndef LINUX_SIGRTMIN
+#define LINUX_SIGRTMIN 43
+#endif
 #define LINUX_SA_NOCLDSTOP 0x00000001u
 #define LINUX_SA_NOCLDWAIT 0x00000002u
 #define LINUX_SA_SIGINFO 0x00000004u

@@ -1,3 +1,38 @@
+#if defined(__ANDROID__)
+#include <fcntl.h>
+#include <unistd.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+static const char* _darling_get_shm_dir(void) {
+	const char* tmp = getenv("TMPDIR");
+	if (tmp && tmp[0]) return tmp;
+	const char* pfx = getenv("TERMUX_PREFIX");
+	if (!pfx || !pfx[0]) pfx = getenv("PREFIX");
+#ifdef TERMUX_PREFIX
+	if (!pfx || !pfx[0]) pfx = TERMUX_PREFIX;
+#endif
+	if (pfx && pfx[0]) {
+		static char buf[PATH_MAX];
+		snprintf(buf, sizeof(buf), "%s/tmp", pfx);
+		if (access(buf, W_OK) == 0)
+			return buf;
+	}
+	return "/tmp";
+}
+static int shm_open(const char *name, int oflag, mode_t mode) {
+	char path[PATH_MAX];
+	if (name[0] == '/') name++;
+	snprintf(path, sizeof(path), "%s/shm-%s", _darling_get_shm_dir(), name);
+	return open(path, oflag | O_CLOEXEC, mode);
+}
+static int shm_unlink(const char *name) {
+	char path[PATH_MAX];
+	if (name[0] == '/') name++;
+	snprintf(path, sizeof(path), "%s/shm-%s", _darling_get_shm_dir(), name);
+	return unlink(path);
+}
+#endif
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>

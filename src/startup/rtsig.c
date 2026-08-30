@@ -16,7 +16,11 @@ int main(int argc, char** argv)
 		}
 	}
 
-	fprintf(output, "#define LINUX_SIGRTMIN %d\n", SIGRTMIN);
+	/* Android Bionic libc reserves signals 32..42; guest RT signals begin at 43 by default.
+	 * Allow override via DARLING_SIGRTMIN environment variable if host Bionic changes range. */
+	const char* env_rtmin = getenv("DARLING_SIGRTMIN");
+	int rtmin = (env_rtmin && env_rtmin[0]) ? atoi(env_rtmin) : 43;
+	fprintf(output, "#define LINUX_SIGRTMIN %d\n", rtmin);
 	fprintf(output, "#define LINUX_SIGRTMAX %d\n", SIGRTMAX);
 
 	fclose(output);
