@@ -481,7 +481,13 @@ adjust_rlimits(launch_data_t in)
 	size_t i,ltmpsz;
 
 	for (i = 0; i < RLIM_NLIMITS; i++) {
-		(void)posix_assumes_zero(getrlimit(i, l + i));
+		// Best-effort: getrlimit should not fail, but on some hosts (Termux)
+		// certain limits are not available. Do not assert on failure.
+		if (getrlimit(i, l + i) != 0) {
+			launchd_syslog(LOG_WARNING, "getrlimit(%d) failed, continuing", (int)i);
+			l[i].rlim_cur = 0;
+			l[i].rlim_max = 0;
+		}
 	}
 
 	if (in) {
@@ -517,19 +523,28 @@ adjust_rlimits(launch_data_t in)
 				}
 
 				if (gval > 0) {
-					(void)posix_assumes_zero(sysctl(gmib, 2, NULL, NULL, &gval, sizeof(gval)));
+					// best-effort: raising kernel-wide limits requires root; ignore failure
+					if (sysctl(gmib, 2, NULL, NULL, &gval, sizeof(gval)) != 0)
+						launchd_syslog(LOG_WARNING, "sysctl(\"%s\") failed (errno=%d), ignoring", gstr, errno);
 				} else {
 					launchd_syslog(LOG_WARNING, "sysctl(\"%s\"): can't be zero", gstr);
 				}
 				if (pval > 0) {
-					(void)posix_assumes_zero(sysctl(pmib, 2, NULL, NULL, &pval, sizeof(pval)));
+					// best-effort: raising kernel-wide limits requires root; ignore failure
+					if (sysctl(pmib, 2, NULL, NULL, &pval, sizeof(pval)) != 0)
+						launchd_syslog(LOG_WARNING, "sysctl(\"%s\") failed (errno=%d), ignoring", pstr, errno);
 				} else {
 					launchd_syslog(LOG_WARNING, "sysctl(\"%s\"): can't be zero", pstr);
 				}
 			}
-			(void)posix_assumes_zero(setrlimit(i, ltmp + i));
-			/* the kernel may have clamped the values we gave it */
-			(void)posix_assumes_zero(getrlimit(i, l + i));
+			// Best-effort: raising a hard limit requires privilege; on non-root
+			// (Termux) setrlimit may fail with EPERM. Do not assert -- just log.
+			if (setrlimit(i, ltmp + i) != 0) {
+				launchd_syslog(LOG_WARNING, "setrlimit(%d) failed (errno=%d), ignoring", (int)i, errno);
+			} else {
+				/* the kernel may have clamped the values we gave it */
+				(void)getrlimit(i, l + i);
+			}
 		}
 	}
 

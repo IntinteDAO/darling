@@ -45,6 +45,7 @@
 #include <netinet6/nd6.h>
 #include <ifaddrs.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <errno.h>
 #include <libgen.h>
@@ -115,9 +116,17 @@ uid_t launchd_uid;
 FILE *launchd_console = NULL;
 int32_t launchd_sync_frequency = 30;
 
+#ifdef DARLING_DEBUG
+extern void darling_kprintf(const char* format, ...);
+#define DLOG(...) darling_kprintf(__VA_ARGS__)
+#else
+#define DLOG(...) ((void)0)
+#endif
+
 int
 main(int argc, char *const *argv)
 {
+	DLOG("LAUNCHD MAIN ENTERED! pid=%d argc=%d nonroot=%s\n", (int)getpid(), argc, getenv("DARLING_NONROOT") ? getenv("DARLING_NONROOT") : "(null)");
 	bool sflag = false;
 	int ch;
 
@@ -160,7 +169,13 @@ main(int argc, char *const *argv)
 		}
 	}
 
-	if (getpid() != 1 && getppid() != 1) {
+	// Non-root mode (DARLING_NONROOT, inherited from the launcher through
+	// darlingserver and mldr): we run in the shared PID namespace, so
+	// launchd is not PID 1. Allow it to start anyway; process tracking is
+	// served by the dserver (kqchan), not /proc, so the container works.
+	bool nonroot = getenv("DARLING_NONROOT") != NULL;
+	setenv("DARLING_NONROOT", nonroot ? "1" : "0", 1);
+	if (getpid() != 1 && getppid() != 1 && !nonroot) {
 		fprintf(stderr, "%s: This program is not meant to be run directly.\n", getprogname());
 		exit(EXIT_FAILURE);
 	}
@@ -175,7 +190,7 @@ main(int argc, char *const *argv)
 		pid1_magic_init();
 
 		int cfd = -1;
-		if ((cfd = open(_PATH_CONSOLE, O_WRONLY | O_NOCTTY)) != -1) {
+		if (access(_PATH_CONSOLE, W_OK) == 0 && (cfd = open(_PATH_CONSOLE, O_WRONLY | O_NOCTTY)) != -1) {
 			_fd(cfd);
 			if (!(launchd_console = fdopen(cfd, "w"))) {
 				(void)close(cfd);
@@ -270,10 +285,13 @@ main(int argc, char *const *argv)
 		launchd_syslog(LOG_DEBUG, "Per-user launchd started (UID/username): %u/%s.", launchd_uid, launchd_username);
 	}
 
+	DLOG("launchd: calling monitor_networking_state\n");
 	monitor_networking_state();
+	DLOG("launchd: calling jobmgr_init\n");
 	jobmgr_init(sflag);
-
+	DLOG("launchd: calling launchd_runtime_init2\n");
 	launchd_runtime_init2();
+	DLOG("launchd: calling launchd_runtime\n");
 	launchd_runtime();
 }
 
@@ -461,9 +479,9 @@ pid1_magic_init(void)
 	_launchd_database_dir = LAUNCHD_DB_PREFIX "/com.apple.launchd";
 	_launchd_log_dir = LAUNCHD_LOG_PREFIX "/com.apple.launchd";
 
-	(void)posix_assumes_zero(setsid());
-	(void)posix_assumes_zero(chdir("/"));
-	(void)posix_assumes_zero(setlogin("root"));
+	(void)setsid();
+	(void)chdir("/");
+	(void)setlogin("root");
 
 #if !TARGET_OS_EMBEDDED && !DARLING
 	auditinfo_addr_t auinfo = {
@@ -590,14 +608,12 @@ get_network_state(void)
 	bool up = false;
 	int r;
 
-	/* Workaround 4978696: getifaddrs() reports false ENOMEM */
-	while ((r = getifaddrs(&ifa)) == -1 && errno == ENOMEM) {
-		launchd_syslog(LOG_DEBUG, "Worked around bug: 4978696");
-		(void)posix_assumes_zero(sched_yield());
-	}
+	DLOG("get_network_state: calling getifaddrs\n");
+	r = getifaddrs(&ifa);
+	DLOG("get_network_state: getifaddrs returned r=%d errno=%d\n", r, errno);
 
-	if (posix_assumes_zero(r) == -1) {
-		return network_up;
+	if (r == -1) {
+		return false;
 	}
 
 	for (ifai = ifa; ifai; ifai = ifai->ifa_next) {
@@ -622,13 +638,20 @@ get_network_state(void)
 void
 monitor_networking_state(void)
 {
+	DLOG("monitor_networking_state: calling get_network_state\n");
+	network_up = get_network_state();
+	DLOG("monitor_networking_state: network_up=%d\n", network_up);
+
 	int pfs = _fd(socket(PF_SYSTEM, SOCK_RAW, SYSPROTO_EVENT));
+	DLOG("monitor_networking_state: socket PF_SYSTEM=%d\n", pfs);
 	struct kev_request kev_req;
 
-	network_up = get_network_state();
-
 	if (pfs == -1) {
-		(void)os_assumes_zero(errno);
+		// PF_SYSTEM (Apple kernel-event socket) is not available on this host
+		// kernel (e.g. Termux/Android). Do NOT os_assumes_zero(errno) here -- a
+		// failure is expected and must not abort the whole init process. Just
+		// skip the kernel-event-based network monitoring.
+		DLOG("monitor_networking_state: PF_SYSTEM socket unavailable (errno=%d), skipping network monitoring\n", errno);
 		return;
 	}
 
@@ -636,12 +659,17 @@ monitor_networking_state(void)
 	kev_req.vendor_code = KEV_VENDOR_APPLE;
 	kev_req.kev_class = KEV_NETWORK_CLASS;
 
-	if (posix_assumes_zero(ioctl(pfs, SIOCSKEVFILT, &kev_req)) == -1) {
+	if (ioctl(pfs, SIOCSKEVFILT, &kev_req) != 0) {
+		DLOG("monitor_networking_state: SIOCSKEVFILT failed (errno=%d), skipping\n", errno);
 		runtime_close(pfs);
 		return;
 	}
 
-	(void)posix_assumes_zero(kevent_mod(pfs, EVFILT_READ, EV_ADD, 0, 0, &kqpfsystem_callback));
+	if (kevent_mod(pfs, EVFILT_READ, EV_ADD, 0, 0, &kqpfsystem_callback) != 0) {
+		DLOG("monitor_networking_state: kevent_mod PF_SYSTEM failed (errno=%d), skipping\n", errno);
+		runtime_close(pfs);
+		return;
+	}
 }
 
 void

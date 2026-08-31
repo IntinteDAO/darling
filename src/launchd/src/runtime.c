@@ -50,6 +50,13 @@
 #include <bsm/libbsm.h>
 #include <malloc/malloc.h>
 #include <unistd.h>
+#include <fcntl.h>
+#ifdef DARLING_DEBUG
+extern void darling_kprintf(const char* format, ...);
+#define DLOG(...) darling_kprintf(__VA_ARGS__)
+#else
+#define DLOG(...) ((void)0)
+#endif
 #include <pthread.h>
 #include <errno.h>
 #include <string.h>
@@ -186,14 +193,24 @@ launchd_runtime_init(void)
 {
 	pid_t p = getpid();
 
+	DLOG("launchd_runtime_init START\n");
 	(void)posix_assert_zero((mainkq = kqueue()));
+	DLOG("launchd_runtime_init: kqueue OK (mainkq=%d)\n", mainkq);
 
 	os_assert_zero(mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &demand_port_set));
+	DLOG("launchd_runtime_init: demand_port_set OK (%d)\n", demand_port_set);
+
 	os_assert_zero(mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_PORT_SET, &ipc_port_set));
+	DLOG("launchd_runtime_init: ipc_port_set OK (%d)\n", ipc_port_set);
+
 	posix_assert_zero(kevent_mod(demand_port_set, EVFILT_MACHPORT, EV_ADD, 0, 0, &kqmportset_callback));
+	DLOG("launchd_runtime_init: kevent_mod EVFILT_MACHPORT OK\n");
 
 	os_assert_zero(launchd_mport_create_recv(&launchd_internal_port));
+	DLOG("launchd_runtime_init: launchd_internal_port recv OK (%d)\n", launchd_internal_port);
+
 	os_assert_zero(launchd_mport_make_send(launchd_internal_port));
+	DLOG("launchd_runtime_init: launchd_internal_port send OK\n");
 
 	max_msg_size = sizeof(union vproc_mig_max_sz);
 	if (sizeof(union xpc_domain_max_sz) > max_msg_size) {
@@ -201,10 +218,16 @@ launchd_runtime_init(void)
 	}
 
 	os_assert_zero(runtime_add_mport(launchd_internal_port, launchd_internal_demux));
+	DLOG("launchd_runtime_init: runtime_add_mport OK\n");
+
 	os_assert_zero(pthread_create(&kqueue_demand_thread, NULL, kqueue_demand_loop, NULL));
+	DLOG("launchd_runtime_init: pthread_create OK\n");
+
 	os_assert_zero(pthread_detach(kqueue_demand_thread));
+	DLOG("launchd_runtime_init: pthread_detach OK\n");
 
 	(void)posix_assumes_zero(sysctlbyname("vfs.generic.noremotehang", NULL, NULL, &p, sizeof(p)));
+	DLOG("launchd_runtime_init DONE!\n");
 }
 
 void
@@ -550,9 +573,12 @@ x_handle_kqueue(mach_port_t junk __attribute__((unused)), integer_t fd)
 	struct kevent *kevi, kev[BULK_KEV_MAX];
 	int i;
 
+	DLOG("x_handle_kqueue: ENTER fd=%d\n", fd);
+
 	bulk_kev = kev;
 
 	if ((bulk_kev_cnt = kevent(fd, NULL, 0, kev, BULK_KEV_MAX, &ts)) != -1) {
+	DLOG("x_handle_kqueue: kevent returned %d events\n", bulk_kev_cnt);
 #if 0	
 		for (i = 0; i < bulk_kev_cnt; i++) {
 			log_kevent_struct(LOG_DEBUG, &kev[0], i);
@@ -563,6 +589,7 @@ x_handle_kqueue(mach_port_t junk __attribute__((unused)), integer_t fd)
 			kevi = &kev[i];
 
 			if (kevi->filter) {
+				DLOG("x_handle_kqueue: kevent %d ident=%lu filter=%d udata=%p\n", i, kevi->ident, kevi->filter, (void*)kevi->udata);
 				launchd_syslog(LOG_DEBUG, "Dispatching kevent (ident/filter): %lu/%hd", kevi->ident, kevi->filter);
 				log_kevent_struct(LOG_DEBUG, kev, i);
 
@@ -572,8 +599,10 @@ x_handle_kqueue(mach_port_t junk __attribute__((unused)), integer_t fd)
 
 				struct job_check_s *check = kevi->udata;
 				if (check && check->kqc) {
+					DLOG("x_handle_kqueue: calling kqc=%p\n", (void*)check->kqc);
 					runtime_ktrace(RTKT_LAUNCHD_BSD_KEVENT|DBG_FUNC_START, kevi->ident, kevi->filter, kevi->fflags);
 					(*((kq_callback *)kevi->udata))(kevi->udata, kevi);
+					DLOG("x_handle_kqueue: kqc returned\n");
 					runtime_ktrace0(RTKT_LAUNCHD_BSD_KEVENT|DBG_FUNC_END);
 				} else {
 					launchd_syslog(LOG_ERR, "The following kevent had invalid context data. Please file a bug with the following information:");
@@ -835,6 +864,7 @@ kevent_mod(uintptr_t ident, short filter, u_short flags, u_int fflags, intptr_t 
 boolean_t
 launchd_internal_demux(mach_msg_header_t *Request, mach_msg_header_t *Reply)
 {
+	DLOG("launchd_internal_demux: ENTER id=%u\n", Request->msgh_id);
 	if (internal_server_routine(Request)) {
 		return internal_server(Request, Reply);
 	} else if (notify_server_routine(Request)) {
@@ -994,10 +1024,18 @@ static boolean_t
 launchd_mig_demux(mach_msg_header_t *request, mach_msg_header_t *reply)
 {
 	boolean_t result = false;
+	size_t port_idx = MACH_PORT_INDEX(request->msgh_local_port);
 
+	DLOG("launchd_mig_demux: id=%u local_port=%u idx=%zu table_sz=%zu\n",
+		request->msgh_id, request->msgh_local_port, port_idx, mig_cb_table_sz);
 	time_of_mach_msg_return = runtime_get_opaque_time();
 	launchd_syslog(LOG_DEBUG, "MIG callout: %u", request->msgh_id);
-	mig_callback the_demux = mig_cb_table[MACH_PORT_INDEX(request->msgh_local_port)];
+	mig_callback the_demux = (port_idx * sizeof(mig_callback) < mig_cb_table_sz) ? mig_cb_table[MACH_PORT_INDEX(request->msgh_local_port)] : NULL;
+	DLOG("launchd_mig_demux: the_demux=%p reply=%p\n", (void*)the_demux, (void*)reply);
+	if (!the_demux) {
+		DLOG("launchd_mig_demux: no demux, skipping\n");
+		return false;
+	}
 	mach_msg_audit_trailer_t *tp = (mach_msg_audit_trailer_t *)((vm_offset_t)request + round_msg(request->msgh_size));
 	runtime_record_caller_creds(&tp->msgh_audit);
 
@@ -1023,9 +1061,12 @@ launchd_mig_demux(mach_msg_header_t *request, mach_msg_header_t *reply)
 void
 launchd_runtime2(mach_msg_size_t msg_size)
 {
+	DLOG("launchd_runtime2: ENTER msg_size=%lu\n", (unsigned long)msg_size);
+	int dbg_iter = 0;
 	for (;;) {
 		launchd_log_push();
 
+		if (dbg_iter < 10) DLOG("launchd_runtime2: iter %d, xpc_pipe_try_receive\n", dbg_iter++);
 		mach_port_t recvp = MACH_PORT_NULL;
 		xpc_object_t request = NULL;
 		int result = xpc_pipe_try_receive(ipc_port_set, &request, &recvp, launchd_mig_demux, msg_size, 0);
@@ -1379,14 +1420,18 @@ do_file_init(void)
 {
 	struct stat sb;
 
+	DLOG("launchd: do_file_init START\n");
 	os_assert_zero(mach_timebase_info(&tbi));
+	DLOG("launchd: do_file_init after mach_timebase_info\n");
 	tbi_float_val = tbi.numer;
 	tbi_float_val /= tbi.denom;
 	tbi_safe_math_max = UINT64_MAX / tbi.numer;
 
 	launchd_system_start = runtime_get_wall_time();
 
-	if (getpid() == 1) {
+	if (getpid() == 1 || getenv("DARLING_NONROOT")) {
+		// In non-root mode we are not really PID 1, but we must behave like
+		// the global (PID 1) launchd so that system jobs load correctly.
 		pid1_magic = true;
 	}
 

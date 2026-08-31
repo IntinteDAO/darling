@@ -41,7 +41,7 @@ bootstrap_init(void)
 {
 	kern_return_t kr = task_get_special_port(task_self_trap(), TASK_BOOTSTRAP_PORT, &bootstrap_port);
 	if (kr != KERN_SUCCESS) {
-		abort();
+		bootstrap_port = MACH_PORT_NULL;
 	}
 }
 

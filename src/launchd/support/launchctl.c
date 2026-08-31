@@ -56,6 +56,14 @@
 #include <netinet/in_var.h>
 #include <netinet6/nd6.h>
 #include <unistd.h>
+#include <sys/syscall.h>
+#ifndef SYS_getdents64
+#if defined(__aarch64__)
+#define SYS_getdents64 61   /* Linux aarch64 syscall number */
+#elif defined(__x86_64__)
+#define SYS_getdents64 217  /* Linux x86_64 syscall number */
+#endif
+#endif
 #include <dirent.h>
 #include <libgen.h>
 #include <libinfo.h>
@@ -1303,6 +1311,7 @@ readpath(const char *what, struct load_unload_state *lus)
 	struct stat sb;
 	struct dirent *de;
 	DIR *d;
+	int cnt = 0;
 
 	if (!path_goodness_check(what, lus->forceload)) {
 		return;
@@ -1315,24 +1324,54 @@ readpath(const char *what, struct load_unload_state *lus)
 	if (S_ISREG(sb.st_mode)) {
 		readfile(what, lus);
 	} else if (S_ISDIR(sb.st_mode)) {
-		if ((d = opendir(what)) == NULL) {
-			launchctl_log(LOG_ERR, "%s: opendir() failed to open the directory", getprogname());
-			return;
-		}
+		if ((d = opendir(what)) != NULL) {
+			// Normal path (works in the namespaced/rootful container).
+			while ((de = readdir(d))) {
+				if (de->d_name[0] == '.') {
+					continue;
+				}
+				cnt++;
+				snprintf(buf, sizeof(buf), "%s/%s", what, de->d_name);
 
-		while ((de = readdir(d))) {
-			if (de->d_name[0] == '.') {
-				continue;
+				if (!path_goodness_check(buf, lus->forceload)) {
+					continue;
+				}
+				readfile(buf, lus);
 			}
-			snprintf(buf, sizeof(buf), "%s/%s", what, de->d_name);
-
-			if (!path_goodness_check(buf, lus->forceload)) {
-				continue;
+			closedir(d);
+		} else {
+			// Non-root fallback: in the DARLING non-root container glibc's
+			// opendir() fails with EBADF even though the raw open() of the
+			// directory succeeds. Bypass it with a raw open() + the DARLING
+			// getdirentries() (Darwin syscall 344, which does a raw getdents64
+			// internally). A raw Linux getdents64 (syscall 217) returns ENOSYS
+			// because the container's syscall() dispatches Darwin numbers.
+			int dfd = open(what, O_RDONLY);
+			if (dfd == -1) {
+				launchctl_log(LOG_ERR, "%s: open() failed to open the directory", getprogname());
+				return;
 			}
-
-			readfile(buf, lus);
+			long base = 0;
+			char dbuf[8192];
+			long nr;
+			while ((nr = syscall(344, dfd, dbuf, (unsigned int)sizeof(dbuf), &base)) > 0) {
+				char *p = dbuf;
+				while ((size_t)(p - dbuf) < (size_t)nr) {
+					struct dirent *de2 = (struct dirent *)p;
+					if (de2->d_reclen < 8) break;
+					if (de2->d_name[0] != '.') {
+						cnt++;
+						snprintf(buf, sizeof(buf), "%s/%s", what, de2->d_name);
+						if (path_goodness_check(buf, lus->forceload)) {
+							readfile(buf, lus);
+						}
+					}
+					p += de2->d_reclen;
+				}
+			}
+			(void)close(dfd);
 		}
-		closedir(d);
+		(void)cnt;
 	}
 }
 
