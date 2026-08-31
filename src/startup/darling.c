@@ -18,6 +18,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include <stdio.h>
+#include <dirent.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -49,7 +50,74 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 char *prefix;
 uid_t g_originalUid, g_originalGid;
 bool g_fixPermissions = false;
+bool g_rootless = false;
+bool g_nonroot = false;
 char g_workingDirectory[4096];
+
+static void killDarlingDaemons(int sig)
+{
+	DIR* dir = opendir("/proc");
+	if (!dir) return;
+
+	uid_t myUid = getuid();
+	struct dirent* entry;
+	while ((entry = readdir(dir)) != NULL)
+	{
+		if (entry->d_name[0] < '0' || entry->d_name[0] > '9')
+			continue;
+
+		pid_t pid = (pid_t)atoi(entry->d_name);
+		if (pid == getpid())
+			continue;
+
+		char statusPath[64];
+		snprintf(statusPath, sizeof(statusPath), "/proc/%d/status", pid);
+		FILE* f = fopen(statusPath, "r");
+		if (!f) continue;
+
+		char sline[256];
+		bool uidMatch = false;
+		while (fgets(sline, sizeof(sline), f))
+		{
+			if (strncmp(sline, "Uid:", 4) == 0)
+			{
+				int r, e, s, fs;
+				if (sscanf(sline, "Uid:\t%d\t%d\t%d\t%d", &r, &e, &s, &fs) >= 2)
+				{
+					if (r == (int)myUid || e == (int)myUid)
+						uidMatch = true;
+				}
+				break;
+			}
+		}
+		fclose(f);
+
+		if (!uidMatch) continue;
+
+		char cmdlinePath[64];
+		snprintf(cmdlinePath, sizeof(cmdlinePath), "/proc/%d/cmdline", pid);
+		int fd = open(cmdlinePath, O_RDONLY);
+		if (fd < 0) continue;
+
+		char cmd[512] = {0};
+		ssize_t n = read(fd, cmd, sizeof(cmd) - 1);
+		close(fd);
+
+		if (n > 0)
+		{
+			if (strstr(cmd, "darlingserver") ||
+			    strstr(cmd, "/sbin/launchd") ||
+			    strstr(cmd, "shellspawn") ||
+			    strstr(cmd, "memberd") ||
+			    strstr(cmd, "opendirectoryd") ||
+			    strstr(cmd, "mldr"))
+			{
+				kill(pid, sig);
+			}
+		}
+	}
+	closedir(dir);
+}
 
 int main(int argc, char ** argv)
 {
@@ -61,17 +129,22 @@ int main(int argc, char ** argv)
 		return 1;
 	}
 
-	if (geteuid() != 0)
-	{
-		missingSetuidRoot();
-		return 1;
-	}
-
 	g_originalUid = getuid();
 	g_originalGid = getgid();
 
-	setuid(0);
-	setgid(0);
+	// Full non-root mode (e.g. Android): no user namespaces, no mount
+	// permissions at all. The container runs without any namespace
+	// isolation: the prefix is a plain directory and /proc is the real
+	// (shared) procfs, exposed to the container via a symlink.
+	g_nonroot = (getenv("DARLING_NONROOT") != NULL || geteuid() != 0);
+	if (g_nonroot)
+		g_rootless = true;
+
+	if (!g_nonroot)
+	{		setuid(0);
+		setgid(0);
+		g_rootless = (geteuid() != 0);
+	}
 
 	prefix = getenv("DPREFIX");
 	if (!prefix)
@@ -136,31 +209,36 @@ int main(int argc, char ** argv)
 
 	if (strcmp(argv[1], "shutdown") == 0)
 	{
-		if (pidInit == 0)
+		pid_t pidInit = getInitProcess();
+		if (pidInit > 0)
 		{
-			fprintf(stderr, "Darling container is not running\n");
-			return 1;
+			kill(pidInit, SIGTERM);
+			kill(-pidInit, SIGTERM);
 		}
 
-		// TODO: when we have a working launchd,
-		// this is where we ask it to shut down nicely
+		killDarlingDaemons(SIGTERM);
+		usleep(50000);
 
-		char path_buf[128];
-		FILE* file;
-		pid_t launchd_pid;
-		snprintf(path_buf, sizeof(path_buf), "/proc/%d/task/%d/children", pidInit, pidInit);
-		file = fopen(path_buf, "r");
-		if (!file || fscanf(file, "%d", &launchd_pid) != 1) {
-			fprintf(stderr, "Failed to shutdown Darling container\n");
-			if (file) {
-				fclose(file);
-			}
-			return 1;
+		if (pidInit > 0)
+		{
+			kill(pidInit, SIGKILL);
+			kill(-pidInit, SIGKILL);
 		}
-		fclose(file);
+		killDarlingDaemons(SIGKILL);
 
-		kill(launchd_pid, SIGKILL);
-		kill(pidInit, SIGKILL);
+		char socketPath[4096];
+		snprintf(socketPath, sizeof(socketPath), "%s" SHELLSPAWN_SOCKPATH, prefix);
+		unlink(socketPath);
+
+		char pidPath[4096];
+		snprintf(pidPath, sizeof(pidPath), "%s/.init.pid", prefix);
+		unlink(pidPath);
+
+		char dserverSock[4096];
+		snprintf(dserverSock, sizeof(dserverSock), "%s/.darlingserver.sock", prefix);
+		unlink(dserverSock);
+
+		fprintf(stderr, "Darling container shut down successfully.\n");
 		return 0;
 	}
 
@@ -178,19 +256,29 @@ int main(int argc, char ** argv)
 		putInitPid(pidInit);
 		
 		// Wait until shellspawn starts
-		for (int i = 0; i < 15; i++)
+		for (int i = 0; i < 60; i++)
 		{
 			if (access(socketPath, F_OK) == 0)
 				break;
 			sleep(1);
 		}
+
+		if (access(socketPath, F_OK) != 0)
+		{
+			fprintf(stderr, "Timed out waiting for shellspawn in container\n");
+			return 1;
+		}
 	}
 
 #if USE_LINUX_4_11_HACK
-	joinNamespace(pidInit, CLONE_NEWNS, "mnt");
+	// In non-root mode there is no mount namespace (prefix is a plain dir,
+	// /proc is the real shared procfs), so the shellspawn socket is
+	// resolvable directly and joining is skipped.
+	if (!g_nonroot)
+		joinNamespace(pidInit, CLONE_NEWNS, "mnt");
 #endif
 
-	seteuid(g_originalUid);
+	if (!g_nonroot) seteuid(g_originalUid);
 
 	if (strcmp(argv[1], "shell") == 0)
 	{
@@ -211,19 +299,83 @@ int main(int argc, char ** argv)
 			return 1;
 		}
 
-		char *fullPath;
-		char *path = realpath(argv[argvIndex], NULL);
+		char *fullPath = NULL;
+		const char *prog = argv[argvIndex];
 
-		if (path == NULL)
+		bool isContainerPath = false;
+		if (prog[0] == '/')
 		{
-			printf("'%s' is not a supported command or a file.\n", argv[argvIndex]);
-			return 1;
+			if (strncmp(prog, "/Volumes/", 9) == 0 ||
+			    strncmp(prog, "/bin/", 5) == 0 ||
+			    strncmp(prog, "/sbin/", 6) == 0 ||
+			    strncmp(prog, "/usr/", 5) == 0 ||
+			    strncmp(prog, "/System/", 8) == 0 ||
+			    strncmp(prog, "/Library/", 9) == 0 ||
+			    strncmp(prog, "/Applications/", 14) == 0 ||
+			    strncmp(prog, "/private/", 9) == 0 ||
+			    strncmp(prog, "/etc/", 5) == 0 ||
+			    strncmp(prog, "/tmp/", 5) == 0 ||
+			    strncmp(prog, "/var/", 5) == 0 ||
+			    strncmp(prog, "/dev/", 5) == 0 ||
+			    strncmp(prog, "/proc/", 6) == 0)
+			{
+				isContainerPath = true;
+			}
 		}
 
-		fullPath = malloc(strlen(SYSTEM_ROOT) + strlen(path) + 1);
-		strcpy(fullPath, SYSTEM_ROOT);
-		strcat(fullPath, path);
-		free(path);
+		if (isContainerPath)
+		{
+			fullPath = strdup(prog);
+		}
+		else
+		{
+			char *path = realpath(prog, NULL);
+			// On Android, host /bin points to /system/bin (toybox), do NOT treat /system/bin as host app unless explicitly requested with /system/
+			if (path != NULL && !(strncmp(path, "/system/", 8) == 0 && strncmp(prog, "/system/", 8) != 0))
+			{
+				fullPath = malloc(strlen(SYSTEM_ROOT) + strlen(path) + 1);
+				strcpy(fullPath, SYSTEM_ROOT);
+				strcat(fullPath, path);
+				free(path);
+			}
+			else
+			{
+				if (path) free(path);
+				if (doExec)
+				{
+					if (prog[0] == '/')
+					{
+						fullPath = strdup(prog);
+					}
+					else
+					{
+						char testPath[4096];
+						const char* testDirs[] = {"/usr/bin", "/bin", "/usr/sbin", "/sbin"};
+						bool found = false;
+						for (size_t i = 0; i < sizeof(testDirs)/sizeof(testDirs[0]); i++)
+						{
+							snprintf(testPath, sizeof(testPath), "%s%s/%s", prefix, testDirs[i], prog);
+							if (access(testPath, X_OK) == 0)
+							{
+								snprintf(testPath, sizeof(testPath), "%s/%s", testDirs[i], prog);
+								fullPath = strdup(testPath);
+								found = true;
+								break;
+							}
+						}
+						if (!found)
+						{
+							snprintf(testPath, sizeof(testPath), "/usr/bin/%s", prog);
+							fullPath = strdup(testPath);
+						}
+					}
+				}
+				else
+				{
+					fullPath = strdup(prog);
+				}
+			}
+		}
 
 		argv[argvIndex] = fullPath;
 
@@ -789,7 +941,23 @@ pid_t spawnInitProcess(void)
 		exit(1);
 	}
 
-	if (unshare(CLONE_NEWUTS | CLONE_NEWIPC) != 0)
+	// Non-root: no namespaces at all. Rootless: create a user namespace (mapping our own uid/gid to 0),
+	// a mount namespace and UTS/IPC namespaces. Inside the user
+	// namespace we get CAP_SYS_ADMIN, which darlingserver needs to
+	// create a PID namespace for launchd and to do its mounts.
+	if (g_nonroot)
+	{
+		// nothing: no unshare() calls of any kind
+	}
+	else if (g_rootless)
+	{
+		if (unshare(CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC) != 0)
+		{
+			fprintf(stderr, "Cannot unshare namespaces for rootless mode: %s\n", strerror(errno));
+			exit(1);
+		}
+	}
+	else if (unshare(CLONE_NEWUTS | CLONE_NEWIPC) != 0)
 	{
 		fprintf(stderr, "Cannot unshare UTS and IPC namespaces to create darling-init: %s\n", strerror(errno));
 		exit(1);
@@ -816,6 +984,63 @@ pid_t spawnInitProcess(void)
 		snprintf(pipefd_str, sizeof(pipefd_str), "%d", pipefd[1]);
 
 		close(pipefd[0]);
+
+		if (g_nonroot)
+		{
+			// Tell darlingserver that no namespaces were created and no
+			// mounts are possible. It will use a plain directory prefix
+			// (copy of the system root) and a symlink for /proc.
+			setenv("DARLING_NONROOT", "1", 1);
+		}
+		else if (g_rootless)
+		{
+			// Map our real uid/gid to 0 inside the new user namespace so
+			// that darlingserver runs as the namespace root and has the
+			// CAP_SYS_ADMIN it needs. DARLING_ROOTLESS tells the server
+			// that it is inside a user namespace and not real root (the
+			// real uid is not mapped into the namespace, so chown(2) to
+			// it is not possible).
+			FILE* f;
+
+			f = fopen("/proc/self/uid_map", "w");
+			if (!f || fprintf(f, "0 %d 1\n", g_originalUid) < 0)
+			{
+				fprintf(stderr, "Cannot write uid_map: %s\n", strerror(errno));
+				exit(1);
+			}
+			fclose(f);
+
+			f = fopen("/proc/self/setgroups", "w");
+			if (f)
+			{
+				fprintf(f, "deny\n");
+				fclose(f);
+			}
+
+			f = fopen("/proc/self/gid_map", "w");
+			if (!f || fprintf(f, "0 %d 1\n", g_originalGid) < 0)
+			{
+				fprintf(stderr, "Cannot write gid_map: %s\n", strerror(errno));
+				exit(1);
+			}
+			fclose(f);
+
+			setenv("DARLING_ROOTLESS", "1", 1);
+		}
+
+		setsid();
+		if (!getenv("DSERVER_LOG_STDERR") && !getenv("DARLING_DEBUG"))
+		{
+			int devnull = open("/dev/null", O_RDWR);
+			if (devnull >= 0)
+			{
+				dup2(devnull, STDIN_FILENO);
+				dup2(devnull, STDOUT_FILENO);
+				dup2(devnull, STDERR_FILENO);
+				if (devnull > 2)
+					close(devnull);
+			}
+		}
 
 		execl(INSTALL_PREFIX "/bin/darlingserver", "darlingserver", prefix, uid_str, gid_str, pipefd_str, g_fixPermissions ? "1" : "0", NULL);
 
@@ -872,13 +1097,13 @@ void putInitPid(pid_t pidInit)
 	strcpy(pidPath, prefix);
 	strcat(pidPath, pidFile);
 
-	seteuid(g_originalUid);
-	setegid(g_originalGid);
+	if (!g_nonroot) seteuid(g_originalUid);
+	if (!g_nonroot) setegid(g_originalGid);
 
 	fp = fopen(pidPath, "w");
 
-	seteuid(0);
-	setegid(0);
+	if (!g_nonroot) seteuid(0);
+	if (!g_nonroot) setegid(0);
 
 	if (fp == NULL)
 	{
@@ -1003,8 +1228,8 @@ void setupPrefix()
 
 	fprintf(stderr, "Setting up a new Darling prefix at %s\n", prefix);
 
-	seteuid(g_originalUid);
-	setegid(g_originalGid);
+	if (!g_nonroot) seteuid(g_originalUid);
+	if (!g_nonroot) setegid(g_originalGid);
 
 	createDir(prefix);
 	strcpy(path, prefix);
@@ -1080,8 +1305,8 @@ void setupPrefix()
 	);
 	fclose(file);
 	
-	seteuid(0);
-	setegid(0);
+	if (!g_nonroot) seteuid(0);
+	if (!g_nonroot) setegid(0);
 }
 
 pid_t getInitProcess()
@@ -1163,19 +1388,11 @@ pid_t getInitProcess()
 			int rid, eid, sid, fid;
 			if (sscanf(statusBuf, "Uid: %d %d %d %d", &rid, &eid, &sid, &fid) == 4)
 			{
-				uidMatch = 1;
-				uidMatch &= rid == g_originalUid;
-				uidMatch &= eid == g_originalUid;
-				uidMatch &= sid == g_originalUid;
-				uidMatch &= fid == g_originalUid;
+				uidMatch = (rid == g_originalUid && eid == g_originalUid && (sid == g_originalUid || sid == 0));
 			}
 			if (sscanf(statusBuf, "Gid: %d %d %d %d", &rid, &eid, &sid, &fid) == 4)
 			{
-				gidMatch = 1;
-				gidMatch &= rid == g_originalGid;
-				gidMatch &= eid == g_originalGid;
-				gidMatch &= sid == g_originalGid;
-				gidMatch &= fid == g_originalGid;
+				gidMatch = (rid == g_originalGid && eid == g_originalGid && (sid == g_originalGid || sid == 0));
 			}
 			free(statusBuf);
 		}
