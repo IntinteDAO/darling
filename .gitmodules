@@ -372,7 +372,7 @@
 	url = ../darling-libnetwork.git
 [submodule "src/external/openjdk"]
 	path = src/external/openjdk
-	url = ../openjdk.git
+	url = ../darling-openjdk.git
 [submodule "src/external/pyobjc"]
 	path = src/external/pyobjc
 	url = ../darling-pyobjc.git
