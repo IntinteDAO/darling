@@ -130,7 +130,7 @@ void FUNCTION_NAME(int fd, bool expect_dylinker, struct load_results* lr)
 		 * a low-VA window we control. We hand out distinct slots so dyld and
 		 * subsequently-loaded dylibs don't collide with the main executable
 		 * (which typically wants 0x100000000). */
-		static _Atomic(uintptr_t) next_low_addr = 0x200000000ULL; /* 8 GiB; leave 4GiB+ for main exe (atomic CAS) */
+		static uintptr_t next_low_addr = 0x200000000ULL; /* 8 GiB; leave 4GiB+ for main exe (non-_Atomic; uses __atomic builtins directly) */
 		if (base == 0)
 			mmap_hint = (void*)__atomic_load_n(&next_low_addr, __ATOMIC_RELAXED);
 #endif
