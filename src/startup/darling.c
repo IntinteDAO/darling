@@ -119,6 +119,53 @@ static void killDarlingDaemons(int sig)
 	closedir(dir);
 }
 
+static void spawnShellspawn(void)
+{
+	pid_t spid = fork();
+	if (spid < 0)
+	{
+		perror("fork shellspawn");
+		return;
+	}
+	if (spid == 0)
+	{
+		setsid();
+		int devnull = open("/dev/null", O_RDWR);
+		if (devnull >= 0)
+		{
+			dup2(devnull, STDIN_FILENO);
+			dup2(devnull, STDOUT_FILENO);
+			dup2(devnull, STDERR_FILENO);
+			if (devnull > 2)
+				close(devnull);
+		}
+		else
+		{
+			close(STDIN_FILENO);
+			close(STDOUT_FILENO);
+			close(STDERR_FILENO);
+		}
+
+		char dserverSock[4096];
+		snprintf(dserverSock, sizeof(dserverSock), "%s/.darlingserver.sock", prefix);
+
+		setenv("DARLING_NONROOT", "1", 1);
+		setenv("__mldr_sockpath", dserverSock, 1);
+		setenv("__mldr_DYLD_ROOT_PATH", INSTALL_PREFIX "/libexec/darling", 1);
+
+		char vchrootArg0[4096];
+		snprintf(vchrootArg0, sizeof(vchrootArg0), "mldr!" INSTALL_PREFIX "/libexec/darling/usr/libexec/darling/vchroot");
+
+		execl(INSTALL_PREFIX "/libexec/darling/bin/mldr",
+		      vchrootArg0,
+		      "vchroot",
+		      prefix,
+		      "/usr/libexec/shellspawn",
+		      NULL);
+		_exit(1);
+	}
+}
+
 int main(int argc, char ** argv)
 {
 	pid_t pidInit;
@@ -255,18 +302,41 @@ int main(int argc, char ** argv)
 		pidInit = spawnInitProcess();
 		putInitPid(pidInit);
 		
+		if (g_nonroot)
+			spawnShellspawn();
+
 		// Wait until shellspawn starts
-		for (int i = 0; i < 60; i++)
+		for (int i = 0; i < 200; i++)
 		{
 			if (access(socketPath, F_OK) == 0)
 				break;
-			sleep(1);
+			usleep(50000);
 		}
 
 		if (access(socketPath, F_OK) != 0)
 		{
 			fprintf(stderr, "Timed out waiting for shellspawn in container\n");
 			return 1;
+		}
+	}
+	else if (g_nonroot)
+	{
+		char socketPath[4096];
+		snprintf(socketPath, sizeof(socketPath), "%s" SHELLSPAWN_SOCKPATH, prefix);
+		if (access(socketPath, F_OK) != 0)
+		{
+			spawnShellspawn();
+			for (int i = 0; i < 200; i++)
+			{
+				if (access(socketPath, F_OK) == 0)
+					break;
+				usleep(50000);
+			}
+			if (access(socketPath, F_OK) != 0)
+			{
+				fprintf(stderr, "Timed out waiting for shellspawn in container\n");
+				return 1;
+			}
 		}
 	}
 
