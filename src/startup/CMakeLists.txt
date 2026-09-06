@@ -16,7 +16,9 @@ add_definitions(-DINSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}" -D_GNU_SOURCE -DMLDR_
 
 add_executable(darling darling.c)
 
-target_link_libraries(darling -lutil)
+if (NOT ANDROID)
+	target_link_libraries(darling -lutil)
+endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/src/external/darlingserver/include ${CMAKE_SOURCE_DIR}/src/external/darlingserver/include)
 
