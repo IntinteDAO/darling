@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.13)
 
 SET(CMAKE_SYSTEM_NAME Linux)
+if (CMAKE_C_FLAGS MATCHES "android" OR CMAKE_CXX_FLAGS MATCHES "android" OR ANDROID)
+	set(ANDROID TRUE CACHE BOOL "Android target" FORCE)
+endif()
 
 if (NOT DEFINED CMAKE_SYSTEM_PROCESSOR)
 # Detect host architecture before project() since CMAKE_HOST_SYSTEM_PROCESSOR
