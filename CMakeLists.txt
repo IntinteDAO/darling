@@ -1,7 +1,15 @@
 cmake_minimum_required(VERSION 3.13)
 
 SET(CMAKE_SYSTEM_NAME Linux)
-SET(CMAKE_SYSTEM_PROCESSOR "x86-64")
+
+# Detect host architecture before project() since CMAKE_HOST_SYSTEM_PROCESSOR
+# may not be available yet
+execute_process(COMMAND uname -m OUTPUT_VARIABLE _HOST_ARCH OUTPUT_STRIP_TRAILING_WHITESPACE)
+if (_HOST_ARCH MATCHES "aarch64|arm64")
+	SET(CMAKE_SYSTEM_PROCESSOR "aarch64")
+else()
+	SET(CMAKE_SYSTEM_PROCESSOR "x86-64")
+endif()
 
 # This allows setting the compiler with -DCMAKE_C_COMPILER when configuring.
 if (NOT DEFINED CMAKE_C_COMPILER)
@@ -92,7 +100,7 @@ set(CMAKE_C_IMPLICIT_LINK_LIBRARIES "")
 set(CMAKE_CXX_IMPLICIT_LINK_LIBRARIES "")
 
 if (${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "i686|i386")
-	message(FATAL_ERROR "This software can only be built on x86-64 systems")
+	message(FATAL_ERROR "This software can only be built on x86-64 or aarch64 systems")
 endif (${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "i686|i386")
 
 SET(IGNORED_WARNINGS "-Wno-nullability-completeness -Wno-deprecated-declarations -Wno-availability")
@@ -110,6 +118,14 @@ if(${CMAKE_C_COMPILER_ID} STREQUAL "Clang" AND ${CMAKE_C_COMPILER_VERSION} VERSI
 	#     }
 	set(IGNORED_WARNINGS "${IGNORED_WARNINGS} -Wno-elaborated-enum-base -Wno-undef-prefix")
 	set(ASM_IGNORED_WARNINGS "${ASM_IGNORED_WARNINGS} -Wno-undef-prefix")
+endif()
+
+# DARLING: clang 16+ promoted several long-standing warnings to errors by default
+# (implicit-function-declaration, implicit-int, etc.). Lots of Darling's vendored
+# C code predates C99 strictness; reverting these to warnings keeps the build
+# moving without auditing every legacy source file.
+if(${CMAKE_C_COMPILER_ID} STREQUAL "Clang" AND ${CMAKE_C_COMPILER_VERSION} VERSION_GREATER_EQUAL "16")
+	set(IGNORED_WARNINGS "${IGNORED_WARNINGS} -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=int-conversion -Wno-error=incompatible-function-pointer-types")
 endif()
 
 SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${IGNORED_WARNINGS}")
