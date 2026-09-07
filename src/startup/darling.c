@@ -215,6 +215,35 @@ static void spawnShellspawn(void)
 	}
 }
 
+static void ensureProcSymlink(const char* prefixPath)
+{
+	char procPath[4096];
+	struct stat st;
+	snprintf(procPath, sizeof(procPath), "%s/proc", prefixPath);
+	if (lstat(procPath, &st) == 0)
+	{
+		if (S_ISDIR(st.st_mode))
+		{
+			rmdir(procPath);
+		}
+		else if (S_ISLNK(st.st_mode))
+		{
+			char target[256];
+			ssize_t len = readlink(procPath, target, sizeof(target) - 1);
+			if (len > 0)
+			{
+				target[len] = '\0';
+				if (strcmp(target, "/Volumes/SystemRoot/proc") != 0)
+					unlink(procPath);
+			}
+		}
+	}
+	if (lstat(procPath, &st) != 0)
+	{
+		symlink("/Volumes/SystemRoot/proc", procPath);
+	}
+}
+
 int main(int argc, char ** argv)
 {
 	pid_t pidInit;
@@ -261,6 +290,9 @@ int main(int argc, char ** argv)
 		g_fixPermissions = true;
 	}
 	checkPrefixOwner();
+
+	if (g_nonroot)
+		ensureProcSymlink(prefix);
 
 	int c;
 	while (1)
@@ -843,6 +875,23 @@ int connectToShellspawn(void)
 
 	if (connect(sockfd, (struct sockaddr*) &addr, sizeof(addr)) == -1)
 	{
+		if (g_nonroot && (errno == ECONNREFUSED || errno == ENOENT))
+		{
+			close(sockfd);
+			unlink(addr.sun_path);
+			spawnShellspawn();
+			for (int i = 0; i < 200; i++)
+			{
+				if (access(addr.sun_path, F_OK) == 0)
+					break;
+				usleep(50000);
+			}
+			sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+			if (sockfd != -1 && connect(sockfd, (struct sockaddr*) &addr, sizeof(addr)) == 0)
+			{
+				return sockfd;
+			}
+		}
 		fprintf(stderr, "Error connecting to shellspawn in the container (%s): %s\n", addr.sun_path, strerror(errno));
 		exit(1);
 	}
@@ -1368,6 +1417,9 @@ void setupPrefix()
 		strcat(path, dirs[i]);
 		createDir(path);
 	}
+
+	if (g_nonroot)
+		ensureProcSymlink(prefix);
 
 	// create passwd, master.passwd, and group
 

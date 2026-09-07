@@ -105,7 +105,11 @@ void listenForConnections(void)
 	{
 		sock = accept(g_serverSocket, (struct sockaddr*) &addr, &len);
 		if (sock == -1)
+		{
+			if (errno == EINTR || errno == EAGAIN || errno == ECONNABORTED)
+				continue;
 			break;
+		}
 
 		if (fork() == 0)
 		{
