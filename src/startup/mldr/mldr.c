@@ -174,7 +174,7 @@ int main(int argc, char** argv, char** envp)
 	// allow any process to ptrace us
 	// the only process we really care about being able to do this is the server,
 	// but we can't just use the server's PID, since it lies outside our PID namespace.
-	ptrace(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+	prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
 
 	process_special_env(&mldr_load_results);
 
@@ -288,8 +288,9 @@ int main(int argc, char** argv, char** envp)
 	}
 	mdbg("after set_dyld_info");
 
-	if (dserver_rpc_set_executable_path(filename, strlen(filename)) < 0) {
-		fprintf(stderr, "Failed to tell darlingserver about our executable path\n");
+	int ep_status = dserver_rpc_set_executable_path(filename, strlen(filename));
+	if (ep_status < 0) {
+		fprintf(stderr, "Failed to tell darlingserver about our executable path: %d (%s)\n", ep_status, strerror(-ep_status));
 		exit(1);
 	}
 	mdbg("after set_executable_path, before start_thread");

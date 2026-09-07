@@ -54,6 +54,47 @@ bool g_rootless = false;
 bool g_nonroot = false;
 char g_workingDirectory[4096];
 
+static const char* getInstallPrefix(void)
+{
+	static char prefixBuf[4096] = {0};
+	if (prefixBuf[0])
+		return prefixBuf;
+
+	const char* env = getenv("DARLING_INSTALL_PREFIX");
+	if (env && env[0])
+	{
+		strncpy(prefixBuf, env, sizeof(prefixBuf) - 1);
+		return prefixBuf;
+	}
+
+	char exePath[4096];
+	ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+	if (len > 0)
+	{
+		exePath[len] = '\0';
+		char* lastSlash = strrchr(exePath, '/');
+		if (lastSlash)
+		{
+			*lastSlash = '\0';
+			char* secondSlash = strrchr(exePath, '/');
+			if (secondSlash && strcmp(secondSlash, "/bin") == 0)
+			{
+				*secondSlash = '\0';
+				char checkPath[4096];
+				snprintf(checkPath, sizeof(checkPath), "%s/bin/darlingserver", exePath);
+				if (access(checkPath, X_OK) == 0)
+				{
+					strncpy(prefixBuf, exePath, sizeof(prefixBuf) - 1);
+					return prefixBuf;
+				}
+			}
+		}
+	}
+
+	strncpy(prefixBuf, INSTALL_PREFIX, sizeof(prefixBuf) - 1);
+	return prefixBuf;
+}
+
 static void killDarlingDaemons(int sig)
 {
 	DIR* dir = opendir("/proc");
@@ -130,33 +171,41 @@ static void spawnShellspawn(void)
 	if (spid == 0)
 	{
 		setsid();
-		int devnull = open("/dev/null", O_RDWR);
-		if (devnull >= 0)
+		if (!getenv("DARLING_DEBUG"))
 		{
-			dup2(devnull, STDIN_FILENO);
-			dup2(devnull, STDOUT_FILENO);
-			dup2(devnull, STDERR_FILENO);
-			if (devnull > 2)
-				close(devnull);
-		}
-		else
-		{
-			close(STDIN_FILENO);
-			close(STDOUT_FILENO);
-			close(STDERR_FILENO);
+			int devnull = open("/dev/null", O_RDWR);
+			if (devnull >= 0)
+			{
+				dup2(devnull, STDIN_FILENO);
+				dup2(devnull, STDOUT_FILENO);
+				dup2(devnull, STDERR_FILENO);
+				if (devnull > 2)
+					close(devnull);
+			}
+			else
+			{
+				close(STDIN_FILENO);
+				close(STDOUT_FILENO);
+				close(STDERR_FILENO);
+			}
 		}
 
 		char dserverSock[4096];
 		snprintf(dserverSock, sizeof(dserverSock), "%s/.darlingserver.sock", prefix);
 
+		const char* instPrefix = getInstallPrefix();
+		char mldrDyldRoot[4096];
+		snprintf(mldrDyldRoot, sizeof(mldrDyldRoot), "%s/libexec/darling", instPrefix);
+		char vchrootArg0[4096];
+		snprintf(vchrootArg0, sizeof(vchrootArg0), "mldr!%s/libexec/darling/usr/libexec/darling/vchroot", instPrefix);
+		char mldrBin[4096];
+		snprintf(mldrBin, sizeof(mldrBin), "%s/libexec/darling/bin/mldr", instPrefix);
+
 		setenv("DARLING_NONROOT", "1", 1);
 		setenv("__mldr_sockpath", dserverSock, 1);
-		setenv("__mldr_DYLD_ROOT_PATH", INSTALL_PREFIX "/libexec/darling", 1);
+		setenv("__mldr_DYLD_ROOT_PATH", mldrDyldRoot, 1);
 
-		char vchrootArg0[4096];
-		snprintf(vchrootArg0, sizeof(vchrootArg0), "mldr!" INSTALL_PREFIX "/libexec/darling/usr/libexec/darling/vchroot");
-
-		execl(INSTALL_PREFIX "/libexec/darling/bin/mldr",
+		execl(mldrBin,
 		      vchrootArg0,
 		      "vchroot",
 		      prefix,
@@ -1112,7 +1161,14 @@ pid_t spawnInitProcess(void)
 			}
 		}
 
-		execl(INSTALL_PREFIX "/bin/darlingserver", "darlingserver", prefix, uid_str, gid_str, pipefd_str, g_fixPermissions ? "1" : "0", NULL);
+		const char* instPrefix = getInstallPrefix();
+		char dserverBin[4096];
+		snprintf(dserverBin, sizeof(dserverBin), "%s/bin/darlingserver", instPrefix);
+		char libexecPath[4096];
+		snprintf(libexecPath, sizeof(libexecPath), "%s/libexec/darling", instPrefix);
+		setenv("DARLING_LIBEXEC_PATH", libexecPath, 1);
+
+		execl(dserverBin, "darlingserver", prefix, uid_str, gid_str, pipefd_str, g_fixPermissions ? "1" : "0", NULL);
 
 		fprintf(stderr, "Failed to start darlingserver\n");
 		exit(1);
