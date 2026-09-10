@@ -226,51 +226,35 @@ int main(int argc, char** argv, char** envp)
 		vchroot_unexpand_interpreter(&mldr_load_results);
 	}
 
-	// adjust envp (remove special mldr variables)
-	// NOTE: same as for argv; here we assume the envp strings are contiguous
-	for (size_t i = 0; i < mldr_load_results.envc; ++i) {
-		if (!mldr_load_results.envp[i]) {
-			mldr_load_results.envc = i;
+	// adjust envp: remove special mldr variables, drop empty/malformed entries
+	size_t dst = 0;
+	for (size_t src = 0; src < mldr_load_results.envc; ++src) {
+		const char* entry = mldr_load_results.envp[src];
+		if (!entry)
 			break;
-		}
 
-		size_t len = strlen(mldr_load_results.envp[i]) + 1;
+		// Skip empty strings
+		if (entry[0] == '\0')
+			continue;
 
-		#define ENV_VAR_MATCHES(_name) \
-			(len > sizeof(_name) - 1 && strncmp(mldr_load_results.envp[i], _name, sizeof(_name) - 1) == 0)
-
-		// Don't pass these special env vars down to userland
-		if (
-			ENV_VAR_MATCHES("__mldr_bprefs=")   ||
-			ENV_VAR_MATCHES("__mldr_sockpath=")
-		) {
-			size_t len_after = 0;
-			const char* orig_envp_i_plus_one = mldr_load_results.envp[i + 1];
-
-			--mldr_load_results.envc;
-
-			for (size_t j = i; j < mldr_load_results.envc; ++j) {
-				mldr_load_results.envp[j] = mldr_load_results.envp[i] + len_after;
-				len_after += strlen(mldr_load_results.envp[j + 1]) + 1;
-			}
-			mldr_load_results.envp[mldr_load_results.envc] = NULL;
-
-			memmove(mldr_load_results.envp[i], orig_envp_i_plus_one, len_after);
-			memset(mldr_load_results.envp[i] + len_after, 0, len);
-
-			// we have to check this index again because it now points to a different string
-			--i;
+		// If we were passed __mldr_DYLD_ROOT_PATH, remove the prefix so dyld sees DYLD_ROOT_PATH
+		if (strncmp(entry, "__mldr_DYLD_ROOT_PATH=", sizeof("__mldr_DYLD_ROOT_PATH=") - 1) == 0) {
+			mldr_load_results.envp[dst++] = (char*)(entry + sizeof("__mldr_") - 1);
 			continue;
 		}
-		// If we were passed __mldr_DYLD_ROOT_PATH, it is a special case of DYLD_ROOT_PATH needing to be set,
-		// so we remove the prefix, so dyld reads it as DYLD_ROOT_PATH
-		else if (ENV_VAR_MATCHES("__mldr_DYLD_ROOT_PATH=")) {
-			const char* env_p = mldr_load_results.envp[i];
-			env_p += (sizeof("__mldr_") - 1);
-			size_t len_remaining = strlen(env_p) + 1;
-			memmove(mldr_load_results.envp[i], env_p, len_remaining);
-		}
+
+		// Don't pass any other internal mldr variables down to userland
+		if (strncmp(entry, "__mldr_", sizeof("__mldr_") - 1) == 0)
+			continue;
+
+		// Must be a valid KEY=VALUE variable
+		if (strchr(entry, '=') == NULL)
+			continue;
+
+		mldr_load_results.envp[dst++] = (char*)entry;
 	}
+	mldr_load_results.envp[dst] = NULL;
+	mldr_load_results.envc = dst;
 
 	if (mldr_load_results._32on64)
 		setup_stack32(filename, &mldr_load_results);
