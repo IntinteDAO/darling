@@ -46,6 +46,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 // created in a different mount namespace or under overlayfs
 // (dunno which one is really responsible for this).
 #define USE_LINUX_4_11_HACK 1
+#define SHELLSPAWN_WAIT_RETRIES 1200 // 60s (1200 * 50ms) to allow darlingserver to sync prefix on first run
 
 char *prefix;
 uid_t g_originalUid, g_originalGid;
@@ -387,7 +388,7 @@ int main(int argc, char ** argv)
 			spawnShellspawn();
 
 		// Wait until shellspawn starts
-		for (int i = 0; i < 200; i++)
+		for (int i = 0; i < SHELLSPAWN_WAIT_RETRIES; i++)
 		{
 			if (access(socketPath, F_OK) == 0)
 				break;
@@ -407,7 +408,7 @@ int main(int argc, char ** argv)
 		if (access(socketPath, F_OK) != 0)
 		{
 			spawnShellspawn();
-			for (int i = 0; i < 200; i++)
+			for (int i = 0; i < SHELLSPAWN_WAIT_RETRIES; i++)
 			{
 				if (access(socketPath, F_OK) == 0)
 					break;
@@ -880,7 +881,7 @@ int connectToShellspawn(void)
 			close(sockfd);
 			unlink(addr.sun_path);
 			spawnShellspawn();
-			for (int i = 0; i < 200; i++)
+			for (int i = 0; i < SHELLSPAWN_WAIT_RETRIES; i++)
 			{
 				if (access(addr.sun_path, F_OK) == 0)
 					break;
