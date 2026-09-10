@@ -485,7 +485,7 @@ static bool buildKeychainData(KcBuffer* b, uint8_t** certs_der, size_t* certs_le
 		kcBufWriteU32Be(b, 0);
 		kcBufWriteU32Be(b, (uint32_t)certs_len[i]);
 
-		for (int z = 0; z < 9; z++)
+		for (int z = 0; z < 10; z++)
 			kcBufWriteU32Be(b, 0);
 
 		kcBufAppend(b, certs_der[i], certs_len[i]);
